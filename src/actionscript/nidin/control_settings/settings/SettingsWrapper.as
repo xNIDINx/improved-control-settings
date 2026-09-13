@@ -3,9 +3,12 @@ package nidin.control_settings.settings
    import flash.display.DisplayObject;
    import flash.display.MovieClip;
    import flash.display.Sprite;
+   import flash.events.Event;
    import flash.geom.Rectangle;
+   import flash.utils.Dictionary;
    import flash.utils.getQualifiedClassName;
    import net.wg.gui.components.advanced.ButtonBarEx;
+   import net.wg.gui.components.interfaces.INewCounter;
    import net.wg.gui.events.ListEventEx;
    import net.wg.gui.events.ViewStackEvent;
    import net.wg.gui.lobby.settings.ControlsSettings;
@@ -66,6 +69,7 @@ package nidin.control_settings.settings
       private var controlsLayoutSnapshot:Object = null;
       private var controlsLayoutReady:Boolean = false;
       private var sensitivityEditor:SensitivityEditor = null;
+      private var hiddenNativeCounters:Dictionary = new Dictionary(true);
       private var disposed:Boolean = false;
 
       public function SettingsWrapper(param1:IView, param2:LobbyHook)
@@ -168,6 +172,8 @@ package nidin.control_settings.settings
          {
             return;
          }
+         // Native unread markers may be added after the form or after Apply.
+         controlsSettings.addEventListener(Event.ADDED,this.onNativeCounterAdded);
          if(!controlsSettings.hasOwnProperty(INSTALL_MARKER))
          {
             controlsSettings[INSTALL_MARKER] = true;
@@ -732,6 +738,59 @@ package nidin.control_settings.settings
          {
             sensitivityEditor.syncLayout();
          }
+         if(disposed || controlsSettings == null)
+         {
+            return;
+         }
+         // CounterBase listens to its parent's RESIZE and uses its own target
+         // and offsets. Move existing markers after both of our layout shifts.
+         controlsSettings.dispatchEvent(new Event(Event.RESIZE));
+         for(var index:int = 0; index < controlsSettings.numChildren; index++)
+         {
+            this.syncNativeCounterVisibility(controlsSettings.getChildAt(index));
+         }
+      }
+
+      private function onNativeCounterAdded(event:Event) : void
+      {
+         if(!disposed)
+         {
+            this.syncNativeCounterVisibility(event.target as DisplayObject);
+         }
+      }
+
+      private function syncNativeCounterVisibility(counter:DisplayObject) : void
+      {
+         // Mouse controls and Reset are direct children of this form. Keyboard
+         // row markers and counters on the window tabs belong to other parents.
+         if(counter == null || !(counter is INewCounter) || counter.parent != controlsSettings)
+         {
+            return;
+         }
+         if(currentMode != MODE_COMMON)
+         {
+            if(!(counter in hiddenNativeCounters))
+            {
+               hiddenNativeCounters[counter] = counter.alpha;
+            }
+            // Native deferred validation sets visible=true. Alpha hides the
+            // marker through that validation without changing its unread state.
+            counter.alpha = 0;
+         }
+         else if(counter in hiddenNativeCounters)
+         {
+            counter.alpha = Number(hiddenNativeCounters[counter]);
+            delete hiddenNativeCounters[counter];
+         }
+      }
+
+      private function restoreNativeCounters() : void
+      {
+         for(var counter:Object in hiddenNativeCounters)
+         {
+            DisplayObject(counter).alpha = Number(hiddenNativeCounters[counter]);
+         }
+         hiddenNativeCounters = new Dictionary(true);
       }
 
       private function handleSettingsWindowBeforeDispose(param1:LifeCycleEvent) : void
@@ -754,7 +813,7 @@ package nidin.control_settings.settings
          disposed = true;
          controlsLayoutReady = false;
          for each(var cleanup:Function in [this.cancelPendingTasks,this.detachListeners,
-            this.disposeSensitivityEditor,this.restoreControlsBackground,this.disposeProfileTabsDonor])
+            this.restoreNativeCounters,this.disposeSensitivityEditor,this.restoreControlsBackground,this.disposeProfileTabsDonor])
          {
             try
             {
@@ -797,6 +856,10 @@ package nidin.control_settings.settings
 
       private function detachListeners() : void
       {
+         if(controlsSettings != null)
+         {
+            controlsSettings.removeEventListener(Event.ADDED,this.onNativeCounterAdded);
+         }
          if(controlsSettings != null && controlsSettings.keys != null)
          {
             controlsSettings.keys.removeEventListener(ListEventEx.ITEM_TEXT_CHANGE,this.onKeysItemTextChangeHandler);
