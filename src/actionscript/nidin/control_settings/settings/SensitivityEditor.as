@@ -1,5 +1,6 @@
 package nidin.control_settings.settings
 {
+   import flash.display.DisplayObject;
    import flash.display.Sprite;
    import flash.events.Event;
    import flash.events.FocusEvent;
@@ -24,6 +25,7 @@ package nidin.control_settings.settings
       private var cleanupCallbacks:Array = [];
       private var layoutCallbacks:Array = [];
       private var layoutChanges:Array = [];
+      private var sensitivityInputs:Array = [];
       private var disposed:Boolean = false;
 
       public function SensitivityEditor(controls:ControlsSettings)
@@ -54,6 +56,7 @@ package nidin.control_settings.settings
             return;
          }
          disposed = true;
+         sensitivityInputs = [];
          App.utils.scheduler.cancelTask(this.syncLayout);
          for each(var cleanup:Function in cleanupCallbacks)
          {
@@ -78,6 +81,57 @@ package nidin.control_settings.settings
             control[property] += amount;
             layoutChanges.push({"target":control,"property":property,"amount":amount});
          }
+      }
+
+      private function onFieldTabKeyDown(event:KeyboardEvent) : void
+      {
+         if(disposed || event.keyCode != Keyboard.TAB || event.ctrlKey || event.altKey)
+         {
+            return;
+         }
+         var field:TextField = event.currentTarget as TextField;
+         if(field == null || field.stage == null || field.stage.focus != field)
+         {
+            return;
+         }
+         var index:int = 0;
+         while(index < sensitivityInputs.length && sensitivityInputs[index].field != field)
+         {
+            index++;
+         }
+         if(index == sensitivityInputs.length)
+         {
+            return;
+         }
+         var direction:int = event.shiftKey ? -1 : 1;
+         for(index += direction; index >= 0 && index < sensitivityInputs.length; index += direction)
+         {
+            var input:Object = sensitivityInputs[index];
+            var nextField:TextField = input.field;
+            if(!input.slider.enabled || !input.slider.visible || nextField.stage != field.stage)
+            {
+               continue;
+            }
+            var visible:Boolean = true;
+            for(var ancestor:DisplayObject = nextField; ancestor != null; ancestor = ancestor.parent)
+            {
+               if(!ancestor.visible)
+               {
+                  visible = false;
+                  break;
+               }
+            }
+            if(visible)
+            {
+               // Consume only an internal hop, before the client's stage-level
+               // InputDelegate handles Tab. FOCUS_OUT commits the previous value.
+               event.preventDefault();
+               event.stopImmediatePropagation();
+               field.stage.focus = nextField;
+               return;
+            }
+         }
+         // Keep the client's existing navigation beyond either end of the list.
       }
 
       private function installControls() : void
@@ -132,6 +186,7 @@ package nidin.control_settings.settings
          var liveChangeCallback:Function = null;
          var resizeFieldCallback:Function = null;
          var keyCallback:Function = null;
+         var tabKeyCallback:Function = this.onFieldTabKeyDown;
          var focusInCallback:Function = null;
          var blockClickCallback:Function = null;
          var layoutCallback:Function = null;
@@ -329,6 +384,8 @@ package nidin.control_settings.settings
          field.addEventListener(FocusEvent.FOCUS_OUT,commitCallback,false,0,false);
          field.addEventListener(Event.CHANGE,liveChangeCallback,false,0,false);
          field.addEventListener(KeyboardEvent.KEY_DOWN,keyCallback,false,100,false);
+         field.addEventListener(KeyboardEvent.KEY_DOWN,tabKeyCallback,false,100,false);
+         sensitivityInputs.push({"field":field,"slider":slider});
          holder.addChild(lbl);
          frame = new Sprite();
          frame.name = lbl.name + "Frame";
@@ -362,6 +419,7 @@ package nidin.control_settings.settings
             field.removeEventListener(FocusEvent.FOCUS_OUT,commitCallback);
             field.removeEventListener(Event.CHANGE,liveChangeCallback);
             field.removeEventListener(KeyboardEvent.KEY_DOWN,keyCallback);
+            field.removeEventListener(KeyboardEvent.KEY_DOWN,tabKeyCallback);
             clickBlocker.removeEventListener(MouseEvent.MOUSE_DOWN,blockClickCallback);
             // Removing a focused field during Cancel must not commit it again.
             if(field.stage != null && field.stage.focus == field)
