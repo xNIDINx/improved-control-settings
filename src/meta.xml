@@ -1,6 +1,6 @@
 <root>
     <id>nidin.control_settings</id>
-    <version>1.0.7</version>
+    <version>1.0.8</version>
     <name>Улучшенные настройки управления</name>
     <description>Independent equipment key profiles for game modes and an exact mouse sensitivity editor in the standard settings window.</description>
 </root>

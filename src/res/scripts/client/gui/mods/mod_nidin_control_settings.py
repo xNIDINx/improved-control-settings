@@ -284,11 +284,16 @@ class NidinControlSettingsHook(View):
             self.flashObject.as_refreshSettings()
 
     def onBridgeReady(self):
-        # Flash has moved the bridge out of its Wulf wrapper. Keep the view
-        # loaded, but exclude its empty window from focus and modal routing.
+        # Flash has moved the bridge out of its Wulf wrapper. Hiding alone
+        # leaves a LOADED OVERLAY window that blocks notification commands.
+        # Move only that empty Wulf window; the Scaleform view must keep its
+        # multi-view OVERLAY registration and container ownership.
         window = self.getParentWindow()
-        if window is not None and not window.isHidden():
-            window.hide()
+        if window is not None:
+            if not window.isHidden():
+                window.hide()
+            if window.layer != WindowLayer.HIDDEN_SERVICE_LAYOUT:
+                window.setLayer(WindowLayer.HIDDEN_SERVICE_LAYOUT)
 
     def getProfiles(self):
         profiles = _getProfiles()
@@ -304,8 +309,8 @@ def _registerView():
         return
     # SERVICE_LAYOUT is a SingleViewContainer: loading this hook there would
     # evict other mods, including WotStat Widgets. OVERLAY supports multiple
-    # independent views in both applications. onBridgeReady hides our empty
-    # Wulf window after Flash initialization so OVERLAY does not steal focus.
+    # independent views in both applications. onBridgeReady hides and moves
+    # only the empty Wulf wrapper, without changing Scaleform container routing.
     settings = ViewSettings(
         VIEW_ALIAS, NidinControlSettingsHook, SWF_FILE,
         WindowLayer.OVERLAY, None, ScopeTemplates.GLOBAL_SCOPE, False,

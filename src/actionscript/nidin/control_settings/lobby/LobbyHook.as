@@ -112,8 +112,8 @@ package nidin.control_settings.lobby
             (App.instance as MovieClip).addChild(this);
          }
          // The bridge lives on App, but Wulf still owns an empty window in
-         // OVERLAY. Hide that window through Python so it cannot take focus
-         // ahead of the battle menu. Do this after native population/show.
+         // OVERLAY. Python hides and moves only that empty wrapper to the
+         // hidden service layer after native population/show.
          if(this.onBridgeReady != null)
          {
             this.onBridgeReady();
