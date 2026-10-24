@@ -2,7 +2,7 @@
 
 `nidin.improved_control_settings` — мод для «Мира танков»: отдельные клавиши снаряжения для **Стального охотника, Натиска и Линии фронта** и точный ввод чувствительности мыши в стандартных настройках.
 
-[Скачать мод](https://github.com/xNIDINx/improved-control-settings/releases/latest) · [Изменения в версии 1.0.12](https://github.com/xNIDINx/improved-control-settings/releases/tag/v1.0.12)
+[Скачать мод](https://github.com/xNIDINx/improved-control-settings/releases/latest)
 
 ## Установка
 
