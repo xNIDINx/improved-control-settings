@@ -13,7 +13,9 @@ package nidin.control_settings.settings
    import net.wg.gui.events.ViewStackEvent;
    import net.wg.gui.lobby.settings.ControlsSettings;
    import net.wg.gui.lobby.settings.SettingsWindow;
+   import net.wg.gui.lobby.settings.config.SettingsConfigHelper;
    import net.wg.gui.lobby.settings.components.KeysItemRenderer;
+   import net.wg.gui.lobby.settings.vo.SettingsViewData;
    import net.wg.infrastructure.events.LifeCycleEvent;
    import net.wg.infrastructure.interfaces.IView;
    import nidin.control_settings.lobby.LobbyHook;
@@ -153,17 +155,29 @@ package nidin.control_settings.settings
          {
             return;
          }
+         if(param1.viewId == CONTROLS_SETTINGS_LINKAGE)
+         {
+            controlsSettings = param1.view as ControlsSettings;
+            this.hookControlsSettings();
+            this.refreshSettings();
+         }
+         this.syncProfileTabsVisibility();
+      }
+
+      private function isControlsCurrent() : Boolean
+      {
+         return !disposed && settingsWindow != null && settingsWindow.view != null &&
+            controlsSettings != null && settingsWindow.view.currentView === controlsSettings &&
+            settingsWindow.view.currentViewId == CONTROLS_SETTINGS_LINKAGE;
+      }
+
+      private function syncProfileTabsVisibility() : void
+      {
          if(profileTabsDonor != null)
          {
-            profileTabsDonor.visible = param1.viewId == CONTROLS_SETTINGS_LINKAGE;
+            // NEED_UPDATE can describe a page before ViewStack selects it.
+            profileTabsDonor.visible = controlsLayoutReady && this.isControlsCurrent();
          }
-         if(param1.viewId != CONTROLS_SETTINGS_LINKAGE)
-         {
-            return;
-         }
-         controlsSettings = param1.view as ControlsSettings;
-         this.hookControlsSettings();
-         this.refreshSettings();
       }
 
       private function hookControlsSettings() : void
@@ -214,6 +228,7 @@ package nidin.control_settings.settings
          {
             return false;
          }
+         profileTabsDonor.visible = false;
          profileTabsDonor.name = "nidinModeControlProfileTabsDonor";
          controlsSettings.addChild(profileTabsDonor);
          App.utils.scheduler.scheduleOnNextFrame(this.finishProfileTabsInstall);
@@ -273,7 +288,13 @@ package nidin.control_settings.settings
          profileTabs.selectedIndex = 0;
          profileTabs.validateNow();
          this.showMode(MODE_COMMON);
-         profileTabsDonor.visible = true;
+         // Restore only the page hidden during this initial layout pass.
+         // The user may have selected another page while callbacks waited.
+         if(this.isControlsCurrent())
+         {
+            controlsSettings.visible = true;
+         }
+         this.syncProfileTabsVisibility();
       }
 
       private function makeRoomForProfileTabs() : void
@@ -423,7 +444,6 @@ package nidin.control_settings.settings
       private function showMode(param1:String) : void
       {
          currentMode = param1;
-         controlsSettings.visible = true;
          if(param1 == MODE_COMMON)
          {
             this.setKeysProvider(commonKeysProvider);
@@ -906,6 +926,30 @@ package nidin.control_settings.settings
             if(profileTabsDonor.parent != null)
             {
                profileTabsDonor.parent.removeChild(profileTabsDonor);
+            }
+            // AimSettings is used only as a visual donor while the window is
+            // open. Its base disposal still requires the data lifecycle that
+            // creates headDependedControls. Complete it only after detaching,
+            // so native aim events cannot reach the closing settings window.
+            profileTabsDonor.visible = false;
+            if(!profileTabsDonor.initialized)
+            {
+               profileTabsDonor.validateNow();
+            }
+            if(profileTabsDonor.headDependedControls == null)
+            {
+               var ownedProvider:IDataProvider = profileTabsDonor.tabs.dataProvider;
+               try
+               {
+                  profileTabsDonor.update(new SettingsViewData("AimSettings",
+                     SettingsConfigHelper.instance.getDataItem("AimSettings")));
+               }
+               finally
+               {
+                  // Native update attaches the shared aim-tabs provider.
+                  // ButtonBar.dispose cleans its provider, so restore ours.
+                  profileTabsDonor.tabs.dataProvider = ownedProvider;
+               }
             }
             profileTabsDonor.dispose();
             profileTabsDonor = null;
