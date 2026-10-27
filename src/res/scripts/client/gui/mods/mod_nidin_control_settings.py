@@ -27,6 +27,9 @@ SWF_FILE = 'nidinControlSettings.swf'
 LOAD_DELAY = 1.0
 PREFERENCES_SECTION = 'nidinModeControlProfiles'
 PREFERENCES_VERSION = 2
+DIGITAL_SENSITIVITY_KEY = 'digitalSensitivityEnabled'
+SLIDER_POSITIONS_KEY = 'sliderPositionsEnabled'
+SENSITIVITY_MODE_KEY = 'sensitivityMode'
 
 # Random battles always use common bindings, including with legacy preferences.
 MODES = ('battleRoyale', 'comp7', 'frontline')
@@ -62,10 +65,114 @@ _settingsWindows = set()
 # live. Keep it until the last settings window is released, including on errors.
 _settingsCommonBindings = None
 _hookViewsByApp = {}
+_modEnabled = True
+_digitalSensitivityEnabled = True
+_sliderPositionsEnabled = False
+_modSettingsRegistered = False
 
 
 def _log(message):
     print '[nidin.control_settings] %s' % message
+
+
+def _readSensitivityMode(values):
+    if SENSITIVITY_MODE_KEY in values:
+        mode = values[SENSITIVITY_MODE_KEY]
+        return mode if type(mode) in (int, long) and mode in (0, 1, 2) else 0
+    # Migrate the old checkbox pair. An empty/conflicting pair uses the default.
+    return int(values.get(DIGITAL_SENSITIVITY_KEY, True) is False and
+               values.get(SLIDER_POSITIONS_KEY, False) is True)
+
+
+def _onModSettingsChanged(linkage, values):
+    global _digitalSensitivityEnabled, _sliderPositionsEnabled
+    if linkage != MOD_ID or not isinstance(values, dict):
+        return
+    mode = _readSensitivityMode(values)
+    _digitalSensitivityEnabled = mode == 0
+    _sliderPositionsEnabled = mode == 1
+    # Store one choice: neither an empty selection nor two active modes exist.
+    values[SENSITIVITY_MODE_KEY] = mode
+    values.pop(DIGITAL_SENSITIVITY_KEY, None)
+    values.pop(SLIDER_POSITIONS_KEY, None)
+    enabled = values.get('enabled', True)
+    values['enabled'] = enabled if isinstance(enabled, bool) else True
+    _setModEnabled(values['enabled'])
+    # A sensitivity-mode change alone is read by the next settings window.
+
+
+def _setModEnabled(enabled):
+    global _modEnabled, _settingsCommonBindings
+    if _modEnabled == enabled:
+        return
+    _modEnabled = enabled
+    if not enabled:
+        _settingsCommonBindings = None
+    try:
+        # Keep the arena identity while disabled so re-enabling can restore its
+        # profile. _applyProfile itself enforces the master switch everywhere.
+        _applyProfile(_battleMode)
+    except Exception as error:
+        _log('could not reconcile bindings after toggling the mod: %r' % error)
+    for hook in tuple(_hookViewsByApp.values()):
+        try:
+            hook.setModEnabled(enabled)
+        except Exception as error:
+            _log('could not toggle settings UI: %r' % error)
+
+
+def _registerModSettings():
+    global _modSettingsRegistered
+    if _modSettingsRegistered:
+        return
+    try:
+        from gui.modsSettingsApi import g_modsSettingsApi, templates
+    except ImportError:
+        # Optional integration: without the settings menu the editor stays on.
+        return
+    try:
+        template = {
+            'modDisplayName': u'Улучшенные настройки управления',
+            'settingsVersion': 7,
+            'enabled': True,
+            'column1': [templates.createRadioButtonGroup(
+                u'Режим настройки чувствительности', SENSITIVITY_MODE_KEY,
+                [u'Точная цифровая из preference',
+                 u'Упрощённая от 0 до 100', u'Стандартный'], 0,
+                tooltip=(u'{BODY}Точная настройка: поля под ползунками показывают значения '
+                         u'чувствительности из настроек игры и позволяют вводить их вручную '
+                         u'с шестью знаками после запятой.\n\n'
+                         u'Упрощённая настройка: числа справа показывают положение ползунков '
+                         u'от 0 до 100. Для изменения чувствительности перемещайте ползунок.{/BODY}'))],
+            'column2': []
+        }
+        saved = g_modsSettingsApi.getModSettings(MOD_ID, template)
+        if saved is None:
+            previous = g_modsSettingsApi.getModSettings(MOD_ID, {'settingsVersion': 1})
+            previous = dict(previous) if isinstance(previous, dict) else None
+            saved = g_modsSettingsApi.setModTemplate(MOD_ID, template, _onModSettingsChanged)
+            if saved is not None and previous is not None:
+                # API 1.7.1 resets values on template upgrades. Migrate the old
+                # pair before replacing it with a single native radio group.
+                saved = dict(saved)
+                saved[SENSITIVITY_MODE_KEY] = _readSensitivityMode(previous)
+                saved['enabled'] = previous.get('enabled', True)
+                _onModSettingsChanged(MOD_ID, saved)
+                g_modsSettingsApi.updateModSettings(MOD_ID, saved)
+                g_modsSettingsApi.saveState()
+        else:
+            g_modsSettingsApi.registerCallback(MOD_ID, _onModSettingsChanged)
+        if saved is None:
+            raise RuntimeError('ModsSettingsAPI rejected the settings template')
+        _onModSettingsChanged(MOD_ID, saved)
+        _modSettingsRegistered = True
+    except Exception as error:
+        # setModTemplate can fail after subscribing; avoid a duplicate on retry.
+        try:
+            g_modsSettingsApi.onSettingsChanged -= _onModSettingsChanged
+        except Exception:
+            pass
+        _log('could not register the digital sensitivity option: %r' % error)
 
 
 def _getPreferencesRoot():
@@ -164,6 +271,8 @@ def _writeProfiles(profiles):
 
 def _saveProfiles(rawProfiles):
     global _profiles
+    if not _modEnabled:
+        return False
     try:
         changes = _normaliseProfiles(rawProfiles)
         stored = _getProfiles()
@@ -228,7 +337,7 @@ def _applyProfile(mode):
     if CommandMapping.g_instance is None:
         _log('profile was not applied: command mapping is not ready')
         return
-    if mode not in MODES:
+    if not _modEnabled or mode not in MODES:
         _restoreCommonMapping()
         _log('using common equipment bindings')
         return
@@ -283,6 +392,13 @@ class NidinControlSettingsHook(View):
         if self._isDAAPIInited():
             self.flashObject.as_refreshSettings()
 
+    def setModEnabled(self, enabled):
+        if self._isDAAPIInited():
+            self.flashObject.as_setModEnabled(enabled)
+
+    def isModEnabled(self):
+        return _modEnabled
+
     def onBridgeReady(self):
         # Flash has moved the bridge out of its Wulf wrapper. Hiding alone
         # leaves a LOADED OVERLAY window that blocks notification commands.
@@ -296,12 +412,20 @@ class NidinControlSettingsHook(View):
                 window.setLayer(WindowLayer.HIDDEN_SERVICE_LAYOUT)
 
     def getProfiles(self):
+        if not _modEnabled:
+            return {}
         profiles = _getProfiles()
         return dict((mode, dict((command, getScaleformKey(key)) for command, key in bindings.iteritems()))
                     for mode, bindings in profiles.iteritems())
 
     def saveProfiles(self, profiles):
         return _saveProfiles(profiles)
+
+    def isDigitalSensitivityEnabled(self):
+        return _modEnabled and _digitalSensitivityEnabled
+
+    def isSliderPositionsEnabled(self):
+        return _modEnabled and _sliderPositionsEnabled and not _digitalSensitivityEnabled
 
 
 def _registerView():
@@ -329,6 +453,7 @@ def _ensureHookForApp(app):
 
 
 def _onGUIInitialized():
+    _registerModSettings()
     _ensureHookForApp(_appLoader.getDefLobbyApp())
     _ensureHookForApp(_appLoader.getDefBattleApp())
 
@@ -352,7 +477,7 @@ def _onGUISpaceEntered(spaceID):
     # The lobby always uses the real global command mapping. This is also a
     # safety net for disconnects where the normal Avatar teardown is skipped.
     _onAvatarBecomeNonPlayer()
-    if _profiles is None:
+    if _modEnabled and _profiles is None:
         try:
             _loadProfiles()
         except Exception as error:
@@ -379,7 +504,7 @@ def _releaseSettingsWindow(window):
 
 def _settingsPopulate(window, *args, **kwargs):
     global _settingsCommonBindings
-    if not _settingsWindows and _activeMode is not None:
+    if _modEnabled and not _settingsWindows and _activeMode is not None:
         # Native keyboard options edit common values without replacing the
         # live battle mapping or notifying the equipment panel of a switch.
         _settingsCommonBindings = _getCommonBindings()
@@ -403,7 +528,7 @@ def _settingsDispose(window, *args, **kwargs):
 def _settingsUpdate(window, *args, **kwargs):
     result = _originalSettingsUpdate(window, *args, **kwargs)
     hook = _hookViewsByApp.get(id(window.app))
-    if hook is not None:
+    if _modEnabled and hook is not None:
         try:
             hook.refreshSettings()
         except Exception as error:
@@ -412,7 +537,7 @@ def _settingsUpdate(window, *args, **kwargs):
 
 
 def _saveCommonCommandMapping(mapping, *args, **kwargs):
-    if mapping is not CommandMapping.g_instance or (_activeMode is None and _settingsCommonBindings is None):
+    if not _modEnabled or mapping is not CommandMapping.g_instance or (_activeMode is None and _settingsCommonBindings is None):
         return _originalMappingSave(mapping, *args, **kwargs)
     # Persist the common values edited by native KeyboardSetting, or the
     # stored common mapping for a background save outside settings.
@@ -427,13 +552,13 @@ def _saveCommonCommandMapping(mapping, *args, **kwargs):
 
 
 def _getKeyboardMapping(setting, *args, **kwargs):
-    if _settingsCommonBindings is not None and setting.cmd in EQUIPMENT_COMMANDS:
+    if _modEnabled and _settingsCommonBindings is not None and setting.cmd in EQUIPMENT_COMMANDS:
         return _settingsCommonBindings[setting.cmd]
     return _originalKeyboardGet(setting, *args, **kwargs)
 
 
 def _setKeyboardMapping(setting, value):
-    if _settingsCommonBindings is not None and setting.cmd in EQUIPMENT_COMMANDS:
+    if _modEnabled and _settingsCommonBindings is not None and setting.cmd in EQUIPMENT_COMMANDS:
         _settingsCommonBindings[setting.cmd] = Keys.KEY_NONE if value is None else SCALEFORM_TO_BW[value]
         if _activeMode is not None:
             return
@@ -446,6 +571,7 @@ KeyboardSetting.setSystemValue = _setKeyboardMapping
 SettingsWindow._populate = _settingsPopulate
 SettingsWindow._dispose = _settingsDispose
 SettingsWindow._update = _settingsUpdate
+_registerModSettings()
 _registerView()
 _appLoader = dependency.instance(IAppLoader)
 _appLoader.onGUISpaceEntered += _onGUISpaceEntered

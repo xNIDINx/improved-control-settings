@@ -5,6 +5,7 @@ package nidin.control_settings.lobby
    import net.wg.data.constants.generated.LAYER_NAMES;
    import net.wg.infrastructure.base.AbstractView;
    import net.wg.infrastructure.events.LoaderEvent;
+   import net.wg.infrastructure.events.LifeCycleEvent;
    import net.wg.infrastructure.interfaces.IManagedContent;
    import net.wg.infrastructure.interfaces.ISimpleManagedContainer;
    import net.wg.infrastructure.interfaces.IView;
@@ -18,6 +19,11 @@ package nidin.control_settings.lobby
       public var getProfiles:Function;
 
       public var saveProfiles:Function;
+
+      public var isDigitalSensitivityEnabled:Function;
+      public var isModEnabled:Function;
+
+      public var isSliderPositionsEnabled:Function;
 
       public var onBridgeReady:Function;
 
@@ -50,6 +56,35 @@ package nidin.control_settings.lobby
       public function getProfilesS() : Object
       {
          return this.getProfiles != null ? this.getProfiles() : {};
+      }
+
+      public function as_setModEnabled(enabled:Boolean) : void
+      {
+         if(!enabled && this.settingsWrapper != null)
+         {
+            try
+            {
+               this.settingsWrapper.deactivate();
+            }
+            finally
+            {
+               this.settingsWrapper = null;
+            }
+         }
+         else if(enabled && this.wrappedWindow != null && this.settingsWrapper == null)
+         {
+            this.settingsWrapper = new SettingsWrapper(this.wrappedWindow,this);
+         }
+      }
+
+      public function isDigitalSensitivityEnabledS() : Boolean
+      {
+         return this.isDigitalSensitivityEnabled == null || Boolean(this.isDigitalSensitivityEnabled());
+      }
+
+      public function isSliderPositionsEnabledS() : Boolean
+      {
+         return this.isSliderPositionsEnabled != null && Boolean(this.isSliderPositionsEnabled());
       }
 
       public function saveProfilesS(param1:Object) : Boolean
@@ -95,12 +130,7 @@ package nidin.control_settings.lobby
       {
          var containerManager:ContainerManagerBase = App.containerMgr as ContainerManagerBase;
          containerManager.loader.removeEventListener(LoaderEvent.VIEW_LOADED,this.onViewLoaded);
-         if(this.settingsWrapper != null)
-         {
-            this.settingsWrapper.dispose();
-         }
-         this.settingsWrapper = null;
-         this.wrappedWindow = null;
+         this.releaseSettingsWindow();
          super.onDispose();
       }
 
@@ -129,13 +159,36 @@ package nidin.control_settings.lobby
       {
          if(param1 != null && param1 != this.wrappedWindow && param1.as_config.alias == SETTINGS_WINDOW_LINKAGE)
          {
-            if(this.settingsWrapper != null)
-            {
-               this.settingsWrapper.dispose();
-            }
+            this.releaseSettingsWindow();
             this.wrappedWindow = param1;
-            this.settingsWrapper = new SettingsWrapper(param1,this);
+            param1.addEventListener(LifeCycleEvent.ON_BEFORE_DISPOSE,this.onSettingsWindowDisposed);
+            if(this.isModEnabled == null || Boolean(this.isModEnabled()))
+            {
+               this.settingsWrapper = new SettingsWrapper(param1,this);
+            }
          }
+      }
+
+      private function onSettingsWindowDisposed(event:LifeCycleEvent) : void
+      {
+         if(event.target === this.wrappedWindow)
+         {
+            this.releaseSettingsWindow();
+         }
+      }
+
+      private function releaseSettingsWindow() : void
+      {
+         if(this.wrappedWindow != null)
+         {
+            this.wrappedWindow.removeEventListener(LifeCycleEvent.ON_BEFORE_DISPOSE,this.onSettingsWindowDisposed);
+         }
+         if(this.settingsWrapper != null)
+         {
+            this.settingsWrapper.dispose();
+         }
+         this.settingsWrapper = null;
+         this.wrappedWindow = null;
       }
    }
 }

@@ -71,6 +71,9 @@ package nidin.control_settings.settings
       private var controlsLayoutSnapshot:Object = null;
       private var controlsLayoutReady:Boolean = false;
       private var sensitivityEditor:SensitivityEditor = null;
+      private var digitalSensitivityEnabled:Boolean = true;
+      private var sliderPositions:SliderPositions = null;
+      private var sliderPositionsEnabled:Boolean = false;
       private var hiddenNativeCounters:Dictionary = new Dictionary(true);
       private var disposed:Boolean = false;
 
@@ -83,6 +86,8 @@ package nidin.control_settings.settings
          {
             return;
          }
+         digitalSensitivityEnabled = hook.isDigitalSensitivityEnabledS();
+         sliderPositionsEnabled = !digitalSensitivityEnabled && hook.isSliderPositionsEnabledS();
          settingsWindow.view.addEventListener(ViewStackEvent.VIEW_CHANGED,this.onViewStackEventHandler);
          settingsWindow.view.addEventListener(ViewStackEvent.NEED_UPDATE,this.onViewStackEventHandler);
          settingsWindow.addEventListener(LifeCycleEvent.ON_BEFORE_DISPOSE,this.handleSettingsWindowBeforeDispose);
@@ -279,9 +284,13 @@ package nidin.control_settings.settings
          controlsSettings.keys.validateNow();
          // Both features are installed by this one window owner after native
          // validation. The editor contributes spacing before the tabs move it.
-         if(sensitivityEditor == null)
+         if(digitalSensitivityEnabled && sensitivityEditor == null)
          {
             sensitivityEditor = new SensitivityEditor(controlsSettings);
+         }
+         else if(sliderPositionsEnabled && sliderPositions == null)
+         {
+            sliderPositions = new SliderPositions(controlsSettings);
          }
          this.makeRoomForProfileTabs();
          controlsLayoutReady = true;
@@ -754,6 +763,10 @@ package nidin.control_settings.settings
 
       private function syncSensitivityLayout() : void
       {
+         if(sliderPositions != null)
+         {
+            sliderPositions.syncLayout();
+         }
          if(sensitivityEditor != null)
          {
             sensitivityEditor.syncLayout();
@@ -822,6 +835,79 @@ package nidin.control_settings.settings
          this.dispose();
       }
 
+      // A live opt-out differs from window destruction: restore the native
+      // provider and geometry while controls still exist, then detach our UI.
+      public function deactivate() : void
+      {
+         if(disposed)
+         {
+            return;
+         }
+         var controls:ControlsSettings = controlsSettings;
+         var wasCurrent:Boolean = this.isControlsCurrent();
+         try
+         {
+            this.cancelPendingTasks();
+            if(controls != null)
+            {
+               currentMode = MODE_COMMON;
+               if(commonKeysProvider != null)
+               {
+                  this.setKeysProvider(commonKeysProvider);
+               }
+               this.setCommonControlsVisible(true);
+               this.restoreControlsLayout();
+               controls.keys.visible = true;
+               this.refreshScrollBarAfterProviderChange();
+            }
+         }
+         finally
+         {
+            // The snapshot includes the editor's spacing. Undo the profile
+            // shift first; editor disposal then removes only its own offsets.
+            this.dispose();
+            if(controls != null)
+            {
+               if(wasCurrent)
+               {
+                  controls.visible = true;
+               }
+               controls.dispatchEvent(new Event(Event.RESIZE));
+            }
+         }
+      }
+
+      private function restoreControlsLayout() : void
+      {
+         if(controlsSettings == null || controlsLayoutSnapshot == null)
+         {
+            return;
+         }
+         var snapshot:Object = controlsLayoutSnapshot;
+         controlsSettings.keyboardFieldSet.y = snapshot.keyboardFieldSetY;
+         controlsSettings.keyboardFieldSet.bg.height = snapshot.keyboardFrameHeight;
+         controlsSettings.keys.y = snapshot.keysY;
+         if(controlsSettings.keys.maskObject != null)
+         {
+            controlsSettings.keys.maskObject.graphics.clear();
+         }
+         controlsSettings.keys.setSize(snapshot.keysWidth,snapshot.keysHeight);
+         controlsSettings.scrollBar.y = snapshot.scrollBarY;
+         controlsSettings.scrollBar.setSize(snapshot.scrollBarWidth,snapshot.scrollBarHeight);
+         controlsSettings.mouseFieldSet.y = snapshot.mouseFieldSetY;
+         if(controlsSettings.mouseSensitivityLabel != null)
+         {
+            controlsSettings.mouseSensitivityLabel.y = snapshot.mouseSensitivityLabelY;
+         }
+         for(var name:String in snapshot.componentY)
+         {
+            if(controlsSettings.hasOwnProperty(name) && controlsSettings[name] != null)
+            {
+               controlsSettings[name].y = snapshot.componentY[name];
+            }
+         }
+      }
+
       public function dispose() : void
       {
          if(disposed)
@@ -833,7 +919,7 @@ package nidin.control_settings.settings
          disposed = true;
          controlsLayoutReady = false;
          for each(var cleanup:Function in [this.cancelPendingTasks,this.detachListeners,
-            this.restoreNativeCounters,this.disposeSensitivityEditor,this.restoreControlsBackground,this.disposeProfileTabsDonor])
+            this.restoreNativeCounters,this.disposeSensitivityEditor,this.disposeSliderPositions,this.restoreControlsBackground,this.disposeProfileTabsDonor])
          {
             try
             {
@@ -849,6 +935,7 @@ package nidin.control_settings.settings
          // Cancel/revert belongs to the native settings model. Do not restore
          // providers, validate renderers or resize a list being destroyed.
          sensitivityEditor = null;
+         sliderPositions = null;
          profileTabs = null;
          profileTabsDonor = null;
          controlsBackground = null;
@@ -911,6 +998,15 @@ package nidin.control_settings.settings
          {
             sensitivityEditor.dispose();
             sensitivityEditor = null;
+         }
+      }
+
+      private function disposeSliderPositions() : void
+      {
+         if(sliderPositions != null)
+         {
+            sliderPositions.dispose();
+            sliderPositions = null;
          }
       }
 
