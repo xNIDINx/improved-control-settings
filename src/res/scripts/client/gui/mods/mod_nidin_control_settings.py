@@ -6,6 +6,9 @@ import BigWorld
 import CommandMapping
 import Keys
 import Settings
+import errno
+import json
+import os
 
 from account_helpers.settings_core.options import KeyboardSetting
 from constants import ARENA_BONUS_TYPE
@@ -30,6 +33,20 @@ PREFERENCES_VERSION = 2
 DIGITAL_SENSITIVITY_KEY = 'digitalSensitivityEnabled'
 SLIDER_POSITIONS_KEY = 'sliderPositionsEnabled'
 SENSITIVITY_MODE_KEY = 'sensitivityMode'
+INITIAL_CONFIG_PATH = os.path.join('mods', 'configs', 'nidin',
+                                   'improved_control_settings', 'config.json')
+INITIAL_CONFIG_CONTENT = u'''{
+  "_comment": [
+    "sensitivityMode — режим настройки чувствительности:",
+    "0 — Точный цифровой из preference (по умолчанию)",
+    "1 — Упрощённый от 0 до 100",
+    "2 — Стандартный",
+    "Значение из этого файла используется только при первом запуске игры с модом, если у мода ещё нет сохранённых параметров в ModsSettingsAPI.",
+    "Далее режим меняется только в игре через мод «Настройка модификаций». Значение в ModsSettingsAPI является приоритетнее."
+  ],
+  "sensitivityMode": 0
+}
+'''.encode('utf-8')
 
 # Random battles always use common bindings, including with legacy preferences.
 MODES = ('battleRoyale', 'comp7', 'frontline')
@@ -84,6 +101,56 @@ def _readSensitivityMode(values):
                values.get(SLIDER_POSITIONS_KEY, False) is True)
 
 
+def _ensureInitialConfig():
+    """Create a missing preset without replacing a user's or modpack's file."""
+    if os.path.exists(INITIAL_CONFIG_PATH):
+        return
+    try:
+        try:
+            os.makedirs(os.path.dirname(INITIAL_CONFIG_PATH))
+        except OSError as error:
+            if error.errno != errno.EEXIST:
+                raise
+        try:
+            descriptor = os.open(INITIAL_CONFIG_PATH,
+                                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_BINARY)
+        except OSError as error:
+            if error.errno == errno.EEXIST:
+                return
+            raise
+        with os.fdopen(descriptor, 'wb') as target:
+            target.write(INITIAL_CONFIG_CONTENT)
+    except (IOError, OSError) as error:
+        _log('could not create initial sensitivity config: %r' % error)
+
+
+def _hasSavedSensitivityMode(values):
+    return isinstance(values, dict) and any(key in values for key in
+        (SENSITIVITY_MODE_KEY, DIGITAL_SENSITIVITY_KEY, SLIDER_POSITIONS_KEY))
+
+
+def _readInitialSensitivityMode():
+    """Modpack defaults apply only when this mod has no saved menu settings."""
+    try:
+        with open(INITIAL_CONFIG_PATH, 'rb') as source:
+            raw = source.read(4097)
+        if len(raw) > 4096:
+            raise ValueError('config exceeds 4096 bytes')
+        values = json.loads(raw.decode('utf-8-sig'))
+        if not isinstance(values, dict):
+            raise ValueError('config must be an object')
+        mode = values.get(SENSITIVITY_MODE_KEY, 0)
+        if type(mode) not in (int, long) or mode not in (0, 1, 2):
+            raise ValueError('sensitivityMode must be 0, 1 or 2')
+        return mode
+    except (IOError, OSError) as error:
+        if error.errno != errno.ENOENT:
+            _log('could not read initial sensitivity config; using exact mode')
+    except (ValueError, UnicodeError):
+        _log('invalid initial sensitivity config; using exact mode')
+    return 0
+
+
 def _onModSettingsChanged(linkage, values):
     global _digitalSensitivityEnabled, _sliderPositionsEnabled
     if linkage != MOD_ID or not isinstance(values, dict):
@@ -131,14 +198,15 @@ def _registerModSettings():
         # Optional integration: without the settings menu the editor stays on.
         return
     try:
+        _ensureInitialConfig()
         template = {
             'modDisplayName': u'Улучшенные настройки управления',
-            'settingsVersion': 7,
+            'settingsVersion': 8,
             'enabled': True,
             'column1': [templates.createRadioButtonGroup(
                 u'Режим настройки чувствительности', SENSITIVITY_MODE_KEY,
-                [u'Точная цифровая из preference',
-                 u'Упрощённая от 0 до 100', u'Стандартный'], 0,
+                [u'Точный цифровой из preference',
+                 u'Упрощённый от 0 до 100', u'Стандартный'], 0,
                 tooltip=(u'{BODY}Точная настройка: поля под ползунками показывают значения '
                          u'чувствительности из настроек игры и позволяют вводить их вручную '
                          u'с шестью знаками после запятой.\n\n'
@@ -147,23 +215,28 @@ def _registerModSettings():
             'column2': []
         }
         saved = g_modsSettingsApi.getModSettings(MOD_ID, template)
-        if saved is None:
+        replaceTemplate = saved is None
+        previous = saved
+        if replaceTemplate:
             previous = g_modsSettingsApi.getModSettings(MOD_ID, {'settingsVersion': 1})
             previous = dict(previous) if isinstance(previous, dict) else None
             saved = g_modsSettingsApi.setModTemplate(MOD_ID, template, _onModSettingsChanged)
-            if saved is not None and previous is not None:
-                # API 1.7.1 resets values on template upgrades. Migrate the old
-                # pair before replacing it with a single native radio group.
-                saved = dict(saved)
-                saved[SENSITIVITY_MODE_KEY] = _readSensitivityMode(previous)
-                saved['enabled'] = previous.get('enabled', True)
-                _onModSettingsChanged(MOD_ID, saved)
-                g_modsSettingsApi.updateModSettings(MOD_ID, saved)
-                g_modsSettingsApi.saveState()
         else:
             g_modsSettingsApi.registerCallback(MOD_ID, _onModSettingsChanged)
-        if saved is None:
-            raise RuntimeError('ModsSettingsAPI rejected the settings template')
+        hasSavedMode = _hasSavedSensitivityMode(previous)
+        if replaceTemplate or not hasSavedMode:
+            # A template can survive removal of its saved settings. API 1.7.1
+            # returns None in that case; populate and verify its settings below.
+            saved = dict(saved) if isinstance(saved, dict) else {}
+            if isinstance(previous, dict):
+                saved['enabled'] = previous.get('enabled', True)
+            saved[SENSITIVITY_MODE_KEY] = (_readSensitivityMode(previous) if hasSavedMode
+                                           else _readInitialSensitivityMode())
+            _onModSettingsChanged(MOD_ID, saved)
+            g_modsSettingsApi.updateModSettings(MOD_ID, saved)
+            if g_modsSettingsApi.getModSettings(MOD_ID, template) is None:
+                raise RuntimeError('ModsSettingsAPI rejected the settings template')
+            g_modsSettingsApi.saveState()
         _onModSettingsChanged(MOD_ID, saved)
         _modSettingsRegistered = True
     except Exception as error:
